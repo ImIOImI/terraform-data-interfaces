@@ -1,0 +1,101 @@
+openapi: 3.0.0
+info:
+  title: Terraform Providers API
+  version: 1.0.0
+paths:
+  /providers:
+    get:
+      summary: Get all providers
+      responses:
+        '200':
+          description: A list of providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  format_version:
+                    type: string
+                  provider_schemas:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        provider:
+                          type: object
+                          properties:
+                            version:
+                              type: integer
+                            block:
+                              type: object
+                              properties:
+                                description_kind:
+                                  type: string
+                        resource_schemas:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            properties:
+                              version:
+                                type: integer
+                              block:
+                                type: object
+                                properties:
+                                  attributes:
+                                    type: object
+                                    additionalProperties:
+                                      type: object
+                                      properties:
+                                        type:
+                                          type: string
+                                        description:
+                                          type: string
+                                        description_kind:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                        computed:
+                                          type: boolean
+                                        sensitive:
+                                          type: boolean
+                                        deprecated:
+                                          type: boolean
+                                        required:
+                                          type: boolean
+                                  description:
+                                    type: string
+                                  description_kind:
+                                    type: string
+                        data_source_schemas:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            properties:
+                              version:
+                                type: integer
+                              block:
+                                type: object
+                                properties:
+                                  attributes:
+                                    type: object
+                                    additionalProperties:
+                                      type: object
+                                      properties:
+                                        type:
+                                          type: string
+                                        description:
+                                          type: string
+                                        description_kind:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                        computed:
+                                          type: boolean
+                                        sensitive:
+                                          type: boolean
+                                        required:
+                                          type: boolean
+                                  description:
+                                    type: string
+                                  description_kind:
+                                    type: string

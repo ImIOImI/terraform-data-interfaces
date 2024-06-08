@@ -1,0 +1,3 @@
+shell: zsh
+terraform_project_path: examples/
+use_tofu: true
