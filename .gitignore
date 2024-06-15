@@ -27,3 +27,4 @@ go.work.sum
 
 # Project specific files
 config.yaml
+**/random_string.txt

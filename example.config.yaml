@@ -1,3 +1,5 @@
 shell: zsh
-terraform_project_path: examples/
+terraform_project_path:
+  - examples/multiple-resources-one-annotation
+  - examples/multiple-resources-no-annotations
 use_tofu: true
