@@ -5,14 +5,14 @@ provider "random" {}
 provider "local" {}
 
 # Create a random pet name
+#  @interface
+#  even more words
 resource "random_pet" "my_random_pet" {
   length    = 2
   separator = "-"
 }
 
 #  Create a random string
-#  @interface
-#  more words
 resource "random_string" "my_random_string" {
   length  = 16
   special = false
@@ -21,7 +21,7 @@ resource "random_string" "my_random_string" {
 
 #  Create a local file with the random string
 #  @interface
-#  even more words
+#  more words
 resource "local_file" "my_local_file" {
   content  = random_string.my_random_string.result
   filename = "${path.module}/random_string.txt"

@@ -24,82 +24,59 @@ type Config struct {
 	Verbose               bool     `yaml:"verbose"`
 }
 
-// ProviderSchema represents the structure of the schema JSON output.
+// TerraformState represents the structure of the terraform show -json output
+type TerraformState struct {
+	Values struct {
+		RootModule struct {
+			Resources []struct {
+				Address string                 `json:"address"`
+				Values  map[string]interface{} `json:"values"`
+			} `json:"resources"`
+		} `json:"root_module"`
+	} `json:"values"`
+}
+
+// ProviderSchema represents the structure of the provider schema JSON output.
 type ProviderSchema struct {
-	FormatVersion   string                         `json:"format_version"`
-	ProviderSchemas map[string]ProviderSchemaEntry `json:"provider_schemas"`
+	ProviderSchemas map[string]ProviderSchemaDetails `json:"provider_schemas"`
 }
 
-type ProviderSchemaEntry struct {
-	Provider          ProviderDetails             `json:"provider"`
-	ResourceSchemas   map[string]ResourceSchema   `json:"resource_schemas"`
-	DataSourceSchemas map[string]DataSourceSchema `json:"data_source_schemas"`
+// ProviderSchemaDetails represents the details of a provider schema.
+type ProviderSchemaDetails struct {
+	ResourceSchemas   map[string]ResourceSchema `json:"resource_schemas"`
+	DataSourceSchemas map[string]ResourceSchema `json:"data_source_schemas"`
 }
 
-type ProviderDetails struct {
-	Version int   `json:"version"`
-	Block   Block `json:"block"`
-}
-
-type Block struct {
-	DescriptionKind string `json:"description_kind"`
-}
-
+// ResourceSchema represents the schema of a resource.
 type ResourceSchema struct {
-	Version int           `json:"version"`
-	Block   ResourceBlock `json:"block"`
+	Block ResourceBlock `json:"block"`
 }
 
+// ResourceBlock represents the block of a resource schema.
 type ResourceBlock struct {
-	Attributes      map[string]Attribute `json:"attributes"`
-	Description     string               `json:"description"`
-	DescriptionKind string               `json:"description_kind"`
+	Attributes map[string]Attribute `json:"attributes"`
 }
 
-type DataSourceSchema struct {
-	Version int             `json:"version"`
-	Block   DataSourceBlock `json:"block"`
-}
-
-type DataSourceBlock struct {
-	Attributes      map[string]Attribute `json:"attributes"`
-	Description     string               `json:"description"`
-	DescriptionKind string               `json:"description_kind"`
-}
-
-// Custom Type to handle both string and array for the type field
-type Type struct {
-	Value interface{}
-}
-
-func (t *Type) UnmarshalJSON(data []byte) error {
-	var single string
-	if err := json.Unmarshal(data, &single); err == nil {
-		t.Value = single
-		return nil
-	}
-	var array []string
-	if err := json.Unmarshal(data, &array); err == nil {
-		t.Value = array
-		return nil
-	}
-	return fmt.Errorf("type should be a string or an array of strings")
-}
-
+// Attribute represents an attribute in a resource block.
 type Attribute struct {
-	Type            Type   `json:"type"`
-	Description     string `json:"description"`
-	DescriptionKind string `json:"description_kind"`
-	Optional        bool   `json:"optional,omitempty"`
-	Computed        bool   `json:"computed,omitempty"`
-	Required        bool   `json:"required,omitempty"`
-	Sensitive       bool   `json:"sensitive,omitempty"`
-	Deprecated      bool   `json:"deprecated,omitempty"`
+	Type        interface{} `json:"type"`
+	Description string      `json:"description"`
+	Optional    bool        `json:"optional"`
+	Computed    bool        `json:"computed"`
+	Required    bool        `json:"required"`
+}
+
+// AnnotatedResource represents an annotated resource found in a Terraform file
+type AnnotatedResource struct {
+	File     string
+	Line     int
+	Resource string
+	Provider string
 }
 
 // Function to check for @interface annotations and extract resource type and name
-func findAnnotatedResources(path string, variables map[string]string, verbose bool) []string {
-	var annotatedResources []string
+func findAnnotatedResources(path string, verbose bool) []AnnotatedResource {
+	var annotatedResources []AnnotatedResource
 
 	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -118,7 +95,9 @@ func findAnnotatedResources(path string, variables map[string]string, verbose bo
 			scanner := bufio.NewScanner(file)
 			inAnnotation := false
 			resourceBlock := ""
+			lineNumber := 0
 			for scanner.Scan() {
+				lineNumber++
 				line := strings.TrimSpace(scanner.Text())
 				if verbose {
 					log.Printf("Reading line: %s", line)
@@ -134,15 +113,21 @@ func findAnnotatedResources(path string, variables map[string]string, verbose bo
 					if strings.HasPrefix(line, "resource") {
 						resourceBlock = line
 						for scanner.Scan() {
+							lineNumber++
 							line := strings.TrimSpace(scanner.Text())
 							resourceBlock += "\n" + line
 							if strings.HasPrefix(line, "}") {
 								break
 							}
 						}
-						resourceInfo := extractResourceInfo(resourceBlock, variables, path)
+						resourceInfo, provider := extractResourceInfo(resourceBlock)
 						if resourceInfo != "" {
-							annotatedResources = append(annotatedResources, resourceInfo)
+							annotatedResources = append(annotatedResources, AnnotatedResource{
+								File:     path,
+								Line:     lineNumber,
+								Resource: resourceInfo,
+								Provider: provider,
+							})
 						}
 						resourceBlock = ""
 						inAnnotation = false
@@ -160,89 +145,69 @@ func findAnnotatedResources(path string, variables map[string]string, verbose bo
 	return annotatedResources
 }
 
-// Function to extract resource type and name
-func extractResourceInfo(resourceBlock string, variables map[string]string, projectPath string) string {
+// Function to extract resource type, name and provider
+func extractResourceInfo(resourceBlock string) (string, string) {
 	re := regexp.MustCompile(`resource\s+"(\w+)"\s+"(\w+)"`)
 	matches := re.FindStringSubmatch(resourceBlock)
 	if len(matches) == 3 {
 		resourceType := matches[1]
 		resourceName := matches[2]
-		return fmt.Sprintf("Resource Type: %s, Name: %s\n%s", resourceType, resourceName, extractResourceAttributes(resourceBlock, variables, projectPath))
-	}
-	return ""
-}
 
-// Function to extract resource attributes with variable expansion
-func extractResourceAttributes(resourceBlock string, variables map[string]string, projectPath string) string {
-	attributes := ""
-	re := regexp.MustCompile(`(\w+)\s+=\s+(.+)`)
-	matches := re.FindAllStringSubmatch(resourceBlock, -1)
-	for _, match := range matches {
-		if len(match) == 3 {
-			value := resolveTerraformValue(match[2], projectPath, variables["shell"], variables["command"], variables["verbose"] == "true")
-			attributes += fmt.Sprintf("  %s: %s\n", match[1], value)
+		// Extract provider
+		reProvider := regexp.MustCompile(`provider\s*=\s*"([^"]+)"`)
+		providerMatch := reProvider.FindStringSubmatch(resourceBlock)
+		var provider string
+		if len(providerMatch) == 2 {
+			provider = providerMatch[1]
 		}
+
+		return fmt.Sprintf("%s.%s", resourceType, resourceName), provider
 	}
-	return attributes
+	return "", ""
 }
 
-// Function to resolve a Terraform value using `terraform console`
-func resolveTerraformValue(value string, projectPath string, shell string, command string, verbose bool) string {
-	// First, test if the shell command works by running a simple echo command
-	testCmd := exec.Command(shell, "-c", "echo test")
-	testOutput, err := testCmd.CombinedOutput()
-	if err != nil {
-		log.Fatalf("Failed to run test command: %v, output: %s", err, testOutput)
-	}
+// Function to fetch the JSON state of the Terraform resources
+func fetchTerraformState(shell string, command string, projectPath string, verbose bool) TerraformState {
+	cmdStr := fmt.Sprintf(`%s show -json`, command)
 	if verbose {
-		log.Printf("Test command output: %s", testOutput)
+		log.Printf("Running command: %s -c \"%s\"", shell, cmdStr)
 	}
-
-	// Now, run the terraform console command
-	consoleCommand := fmt.Sprintf("%s console", command)
-	if verbose {
-		log.Printf("Running command: %s -c \"%s\"", shell, consoleCommand)
-	}
-	cmd := exec.Command(shell, "-c", fmt.Sprintf("\"%s\"", consoleCommand))
+	cmd := exec.Command(shell, "-c", cmdStr)
 	cmd.Dir = projectPath
 
-	stdin, err := cmd.StdinPipe()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatalf("Failed to get stdin pipe for %s console: %v", command, err)
+		log.Fatalf("Failed to run command: %v, output: %s", err, output)
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatalf("Failed to get stdout pipe for %s console: %v", command, err)
+	var state TerraformState
+	if err := json.Unmarshal(output, &state); err != nil {
+		log.Fatalf("Failed to parse JSON output: %v", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start %s console: %v", command, err)
-	}
+	return state
+}
 
+// Function to fetch the provider schema JSON
+func fetchProviderSchema(shell string, command string, projectPath string, verbose bool) ProviderSchema {
+	cmdStr := fmt.Sprintf(`%s providers schema -json`, command)
 	if verbose {
-		log.Printf("Writing to console: %s", value)
+		log.Printf("Running command: %s -c \"%s\"", shell, cmdStr)
 	}
-	_, err = stdin.Write([]byte(value + "\n"))
+	cmd := exec.Command(shell, "-c", cmdStr)
+	cmd.Dir = projectPath
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatalf("Failed to write to %s console: %v", command, err)
+		log.Fatalf("Failed to run command: %v, output: %s", err, output)
 	}
 
-	var result string
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) != "" {
-			result = line
-			break
-		}
+	var schema ProviderSchema
+	if err := json.Unmarshal(output, &schema); err != nil {
+		log.Fatalf("Failed to parse JSON output: %v", err)
 	}
 
-	if err := cmd.Wait(); err != nil {
-		log.Fatalf("Failed to wait for %s console to finish: %v", command, err)
-	}
-
-	return result
+	return schema
 }
 
 // Function to find required attributes for a given resource type from the schema
@@ -258,6 +223,131 @@ func findRequiredAttributes(schema ProviderSchema, resourceType string) []string
 		}
 	}
 	return requiredAttributes
+}
+
+// Function to create the "interface" directory if it doesn't exist
+func createInterfaceDirectory(path string) string {
+	interfaceDir := filepath.Join(path, "interface")
+	if _, err := os.Stat(interfaceDir); os.IsNotExist(err) {
+		err := os.Mkdir(interfaceDir, 0755)
+		if err != nil {
+			log.Fatalf("Failed to create directory %s: %v", interfaceDir, err)
+		}
+		log.Printf("Created directory: %s", interfaceDir)
+	} else {
+		log.Printf("Directory already exists: %s", interfaceDir)
+	}
+	return interfaceDir
+}
+
+// Function to create a Terraform file with data resources
+func createTerraformFile(interfaceDir string, resources []AnnotatedResource, state TerraformState, schema ProviderSchema) {
+	filePath := filepath.Join(interfaceDir, "generated_data.tf")
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatalf("Failed to create Terraform file %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+
+	for _, resource := range resources {
+		parts := strings.Split(resource.Resource, ".")
+		if len(parts) != 2 {
+			log.Fatalf("Invalid resource format: %s", resource.Resource)
+		}
+		resourceType := parts[0]
+		resourceName := parts[1]
+
+		hasMatchingDataResource, dataResourceRequiredAttributes := findMatchingDataResource(resource.Resource, schema)
+		if hasMatchingDataResource {
+			fmt.Fprintf(writer, "data \"%s\" \"%s\" {\n", resourceType, resourceName)
+			for _, attr := range dataResourceRequiredAttributes {
+				if value, exists := extractAttributeValue(resource.Resource, attr, state); exists {
+					fmt.Fprintf(writer, "  %s = \"%v\"\n", attr, value)
+				}
+			}
+			fmt.Fprintf(writer, "}\n\n")
+		}
+	}
+
+	writer.Flush()
+	log.Printf("Created Terraform file: %s", filePath)
+}
+
+// Function to check if a matching data resource exists in the schema
+func findMatchingDataResource(resource string, schema ProviderSchema) (bool, []string) {
+	parts := strings.Split(resource, ".")
+	if len(parts) != 2 {
+		log.Fatalf("Invalid resource format: %s", resource)
+	}
+	resourceType := parts[0]
+
+	for _, providerSchema := range schema.ProviderSchemas {
+		if dataSourceSchema, exists := providerSchema.DataSourceSchemas[resourceType]; exists {
+			var requiredAttributes []string
+			for attributeName, attribute := range dataSourceSchema.Block.Attributes {
+				if attribute.Required {
+					requiredAttributes = append(requiredAttributes, attributeName)
+				}
+			}
+			return true, requiredAttributes
+		}
+	}
+	return false, nil
+}
+
+// Function to extract an attribute value from the state
+func extractAttributeValue(resource string, attribute string, state TerraformState) (interface{}, bool) {
+	for _, res := range state.Values.RootModule.Resources {
+		if res.Address == resource {
+			if value, exists := res.Values[attribute]; exists {
+				return value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// Function to create a Terraform file with provider blocks
+func createProviderFile(interfaceDir string, resources []AnnotatedResource, schema ProviderSchema) {
+	filePath := filepath.Join(interfaceDir, "generated_providers.tf")
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatalf("Failed to create Terraform file %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	providers := make(map[string]string)
+
+	for _, resource := range resources {
+		parts := strings.Split(resource.Resource, ".")
+		if len(parts) != 2 {
+			log.Fatalf("Invalid resource format: %s", resource.Resource)
+		}
+		resourceType := parts[0]
+
+		for providerSource, providerSchema := range schema.ProviderSchemas {
+			if _, exists := providerSchema.ResourceSchemas[resourceType]; exists {
+				providerName := strings.Split(providerSource, "/")[2]
+				providers[providerName] = providerSource
+			}
+		}
+	}
+
+	fmt.Fprintln(writer, "terraform {")
+	fmt.Fprintln(writer, "  required_providers {")
+	for provider, source := range providers {
+		fmt.Fprintf(writer, "    %s = {\n", provider)
+		fmt.Fprintf(writer, "      source = \"%s\"\n", source)
+		fmt.Fprintln(writer, "    }")
+	}
+	fmt.Fprintln(writer, "  }")
+	fmt.Fprintln(writer, "}")
+
+	writer.Flush()
+	log.Printf("Created Terraform provider file: %s", filePath)
 }
 
 func main() {
@@ -293,6 +383,13 @@ func main() {
 	} else if config.Shell != "" {
 		shell = config.Shell
 	}
+
+	// Check if shell exists and is executable
+	shellPath, err := exec.LookPath(shell)
+	if err != nil {
+		log.Fatalf("Shell not found or not executable: %s", shell)
+	}
+	log.Printf("Using shell path: %s", shellPath)
 
 	// Determine the paths to the Terraform projects
 	var terraformProjectPaths []string
@@ -331,29 +428,10 @@ func main() {
 		log.Fatalf("Failed to get current directory: %v", err)
 	}
 
-	// Define known variables
-	variables := map[string]string{
-		"${path.module}": currentDir,
-		"shell":          shell,
-		"command":        "terraform",
-		"verbose":        fmt.Sprintf("%v", verbose),
-	}
-
-	if useTofu {
-		variables["command"] = "tofu"
-	}
-
 	// Ensure PATH is inherited
 	envPath := os.Getenv("PATH")
 	if verbose {
 		log.Printf("Environment PATH: %s", envPath)
-	}
-
-	// Add tofu binary directory to PATH
-	tofuDir := "/path/to/tofu" // Replace with the actual path to tofu
-	envPath = fmt.Sprintf("%s:%s", tofuDir, envPath)
-	if verbose {
-		log.Printf("Updated PATH for tofu: %s", envPath)
 	}
 
 	// Iterate over each Terraform project path
@@ -365,51 +443,36 @@ func main() {
 			log.Fatalf("Failed to change directory to Terraform project: %v", err)
 		}
 
-		// Check if Terraform is applied
-		if !isTerraformApplied(variables["shell"], variables["command"], envPath, verbose) {
-			log.Printf("Terraform project at %s is not applied. Skipping.", fullPath)
-			continue
+		// Fetch the Terraform state
+		command := "terraform"
+		if useTofu {
+			command = "tofu"
 		}
+		state := fetchTerraformState(shell, command, fullPath, verbose)
+
+		// Fetch the provider schema
+		schema := fetchProviderSchema(shell, command, fullPath, verbose)
 
 		// Find and print annotated resources
-		annotatedResources := findAnnotatedResources(".", variables, verbose)
+		annotatedResources := findAnnotatedResources(".", verbose)
 		if len(annotatedResources) == 0 {
 			log.Println("No Annotated Resources")
 		} else {
 			log.Println("Annotated Resources:")
+			var validResources []AnnotatedResource
 			for _, resource := range annotatedResources {
-				fmt.Println(resource)
+				hasMatchingDataResource, _ := findMatchingDataResource(resource.Resource, schema)
+				if hasMatchingDataResource {
+					validResources = append(validResources, resource)
+				} else {
+					fmt.Printf("\033[31mAnnotated resource %s at line %d in file %s does not have a matching data resource!\033[0m\n", resource.Resource, resource.Line, resource.File)
+				}
 			}
-		}
-
-		// Determine the command to execute
-		cmdStr := fmt.Sprintf("%s providers schema -json", variables["command"])
-		if verbose {
-			log.Printf("Running command: %s -c \"%s\"", shell, cmdStr)
-		}
-		cmd := exec.Command(shell, "-c", fmt.Sprintf("\"%s\"", cmdStr))
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s", envPath)) // Ensure PATH is inherited
-
-		// Capture both stdout and stderr
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("Failed to run command: %v", err)
-			log.Printf("Command output: %s", output)
-			log.Fatalf("Exiting due to command failure")
-		}
-
-		// Attempt to parse the JSON output
-		var schema ProviderSchema
-		err = json.Unmarshal(output, &schema)
-		if err != nil {
-			log.Printf("Failed to parse JSON output: %v", err)
-			log.Printf("Command output: %s", output)
-			log.Fatalf("Exiting due to unmarshalling error")
-		}
-
-		// Print the parsed schema if verbose is enabled
-		if verbose {
-			fmt.Printf("Provider Schema: %+v\n", schema)
+			if len(validResources) > 0 {
+				interfaceDir := createInterfaceDirectory(fullPath)
+				createTerraformFile(interfaceDir, validResources, state, schema)
+				createProviderFile(interfaceDir, validResources, schema)
+			}
 		}
 
 		// Return to the original directory before moving to the next project path
@@ -417,27 +480,4 @@ func main() {
 			log.Fatalf("Failed to return to the original directory: %v", err)
 		}
 	}
-}
-
-// Function to check if Terraform is applied
-func isTerraformApplied(shell string, command string, envPath string, verbose bool) bool {
-	cmdStr := fmt.Sprintf("%s show -json", command)
-	if verbose {
-		log.Printf("Running command: %s -c \"%s\"", shell, cmdStr)
-	}
-	cmd := exec.Command(shell, "-c", fmt.Sprintf("\"%s\"", cmdStr))
-	cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s", envPath)) // Ensure PATH is inherited
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if verbose {
-			log.Printf("Command failed: %v", err)
-			log.Printf("Command output: %s", output)
-		}
-		return false
-	}
-	if verbose {
-		log.Printf("Command output: %s", output)
-	}
-	// Check if the output contains any resource state
-	return strings.Contains(string(output), "resources")
 }
