@@ -190,9 +190,6 @@ func fetchProviderSchema(shell string, command string, projectPath string, verbo
 
 func findMatchingDataResource(reference string, schema ProviderSchema) (bool, []string) {
 	parts := strings.Split(reference, ".")
-	if len(parts) < 2 {
-		log.Fatalf("Invalid reference format: %s", reference)
-	}
 	resourceType := parts[0]
 	for _, providerSchema := range schema.ProviderSchemas {
 		if dataSourceSchema, exists := providerSchema.DataSourceSchemas[resourceType]; exists {
@@ -228,7 +225,7 @@ func getResourceState(reference string, state TerraformState) (map[string]interf
 	return nil, false
 }
 
-func createInterfaceDirectory(path string) string {
+func createInterfaceDirectory(path string, verbose bool) string {
 	interfaceDir := filepath.Join(path, "interface")
 	if _, err := os.Stat(interfaceDir); os.IsNotExist(err) {
 		err := os.Mkdir(interfaceDir, 0755)
@@ -236,13 +233,13 @@ func createInterfaceDirectory(path string) string {
 			log.Fatalf("Failed to create directory %s: %v", interfaceDir, err)
 		}
 		log.Printf("Created directory: %s", interfaceDir)
-	} else {
+	} else if verbose {
 		log.Printf("Directory already exists: %s", interfaceDir)
 	}
 	return interfaceDir
 }
 
-func createTerraformFile(interfaceDir string, outputs []AnnotatedOutput, state TerraformState, schema ProviderSchema) {
+func createTerraformFile(interfaceDir string, outputs []AnnotatedOutput, state TerraformState, schema ProviderSchema, verbose bool) {
 	filePath := filepath.Join(interfaceDir, "generated_data.tf")
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -261,25 +258,21 @@ func createTerraformFile(interfaceDir string, outputs []AnnotatedOutput, state T
 		uniqueKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
 		if _, seen := seenResources[uniqueKey]; !seen {
 			seenResources[uniqueKey] = true
-			// Remove the attribute from the reference
-			resourceReference := fmt.Sprintf("%s.%s", resourceType, resourceName)
-			fmt.Printf("\033[32mLooking up resource: %s\033[0m\n", resourceReference)
-			hasMatchingDataResource, dataResourceRequiredAttributes := findMatchingDataResource(resourceReference, schema)
+			hasMatchingDataResource, dataResourceRequiredAttributes := findMatchingDataResource(fmt.Sprintf("%s.%s", resourceType, resourceName), schema)
 			if hasMatchingDataResource {
-				resourceState, exists := getResourceState(resourceReference, state)
+				resourceState, exists := getResourceState(fmt.Sprintf("%s.%s", resourceType, resourceName), state)
 				if exists {
-					fmt.Printf("\033[32mMatching resource: %s\033[0m\n", resourceReference)
-					fmt.Printf("\033[32mResource State for %s:\n%+v\033[0m\n", resourceReference, resourceState)
-					// Log the full state
-					stateJSON, _ := json.MarshalIndent(resourceState, "", "  ")
-					fmt.Printf("\033[32mFull Resource State for %s:\n%s\033[0m\n", resourceReference, string(stateJSON))
+					fmt.Printf("\033[32mMatching resource: %s.%s\033[0m\n", resourceType, resourceName)
+					if verbose {
+						fmt.Printf("\033[32mResource State for %s.%s:\n%+v\033[0m\n", resourceType, resourceName, resourceState)
+					}
 				} else {
-					log.Printf("Resource %s not found in state\n", resourceReference)
+					log.Printf("Resource %s.%s not found in state\n", resourceType, resourceName)
 				}
 				fmt.Printf("\033[32mData source: %s.%s\033[0m\n", resourceType, resourceName)
 				fmt.Fprintf(writer, "data \"%s\" \"%s\" {\n", resourceType, resourceName)
 				for _, attr := range dataResourceRequiredAttributes {
-					if value, exists := extractAttributeValue(resourceReference, attr, state); exists {
+					if value, exists := extractAttributeValue(fmt.Sprintf("%s.%s", resourceType, resourceName), attr, state); exists {
 						fmt.Fprintf(writer, "  %s = \"%v\"\n", attr, value)
 						fmt.Printf("\033[32mRequired attribute: %s = %v\033[0m\n", attr, value)
 					} else {
@@ -292,7 +285,9 @@ func createTerraformFile(interfaceDir string, outputs []AnnotatedOutput, state T
 		}
 	}
 	writer.Flush()
-	log.Printf("Created Terraform file: %s", filePath)
+	if verbose {
+		log.Printf("Created Terraform file: %s", filePath)
+	}
 }
 
 func createProviderFile(interfaceDir string, outputs []AnnotatedOutput, schema ProviderSchema) {
@@ -327,7 +322,31 @@ func createProviderFile(interfaceDir string, outputs []AnnotatedOutput, schema P
 	fmt.Fprintln(writer, "  }")
 	fmt.Fprintln(writer, "}")
 	writer.Flush()
-	log.Printf("Created provider file: %s", filePath)
+}
+
+func createOutputsFile(interfaceDir string, outputs []AnnotatedOutput, verbose bool) {
+	filePath := filepath.Join(interfaceDir, "generated_outputs.tf")
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatalf("Failed to create Terraform file %s: %v", filePath, err)
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+	for _, output := range outputs {
+		parts := strings.Split(output.Reference, ".")
+		if len(parts) != 3 {
+			log.Fatalf("Invalid reference format: %s", output.Reference)
+		}
+		resourceType := parts[0]
+		resourceName := parts[1]
+		fmt.Fprintf(writer, "output \"%s\" {\n", output.Output)
+		fmt.Fprintf(writer, "  value = data.%s.%s.%s\n", resourceType, resourceName, parts[2])
+		fmt.Fprintf(writer, "}\n\n")
+	}
+	writer.Flush()
+	if verbose {
+		log.Printf("Created Terraform file: %s", filePath)
+	}
 }
 
 func main() {
@@ -339,17 +358,17 @@ func main() {
 	config := Config{}
 	configFile, err := ioutil.ReadFile("config.yaml")
 	if err == nil {
-		log.Println("Config file found and read successfully.")
+		fmt.Printf("Config file found and read successfully.\n")
 		if err := yaml.Unmarshal(configFile, &config); err != nil {
-			log.Fatalf("Failed to parse config file: %v", err)
+			fmt.Printf("\033[31mFailed to parse config file: %v\033[0m\n", err)
 		}
 	} else {
-		log.Printf("Config file not found or failed to read: %v", err)
+		fmt.Printf("\033[31mConfig file not found or failed to read: %v\033[0m\n", err)
 	}
 	if *verboseFlag {
 		log.Printf("Config file content: %s", string(configFile))
+		log.Printf("Parsed config: %+v", config)
 	}
-	log.Printf("Parsed config: %+v", config)
 	shell := "bash"
 	if *shellFlag != "" {
 		shell = *shellFlag
@@ -360,7 +379,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Shell not found or not executable: %s", shell)
 	}
-	log.Printf("Using shell path: %s", shellPath)
+	if *verboseFlag {
+		log.Printf("Using shell path: %s", shellPath)
+	}
 	terraformProjectPaths := []string{"."}
 	if *projectPathFlag != "" {
 		terraformProjectPaths = []string{*projectPathFlag}
@@ -369,10 +390,10 @@ func main() {
 	}
 	useTofu := *useTofuFlag || config.UseTofu
 	verbose := *verboseFlag || config.Verbose
-	log.Printf("Using shell: %s", shell)
-	log.Printf("Terraform project paths:\n%s", strings.Join(terraformProjectPaths, "\n"))
-	log.Printf("Using tofu: %v", useTofu)
-	log.Printf("Verbose output: %v", verbose)
+	fmt.Printf("Using shell: %s\n", shell)
+	fmt.Printf("Terraform project paths:\n  %s\n", strings.Join(terraformProjectPaths, "\n  "))
+	fmt.Printf("Using tofu: %v\n", useTofu)
+	fmt.Printf("Verbose output: %v\n", verbose)
 	currentDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current directory: %v", err)
@@ -383,7 +404,7 @@ func main() {
 	}
 	for _, terraformProjectPath := range terraformProjectPaths {
 		fullPath := filepath.Join(currentDir, terraformProjectPath)
-		log.Printf("Changing directory to Terraform project: %s", fullPath)
+		fmt.Printf("\033[1;33mChanging directory to Terraform project: %s\033[0m\n", fullPath)
 		if err := os.Chdir(fullPath); err != nil {
 			log.Fatalf("Failed to change directory to Terraform project: %v", err)
 		}
@@ -401,12 +422,14 @@ func main() {
 		}
 		annotatedOutputs := findAnnotatedOutputs(".", verbose)
 		if len(annotatedOutputs) == 0 {
-			log.Println("No Annotated Outputs")
+			fmt.Println("No Annotated Outputs")
 		} else {
-			log.Println("Annotated Outputs:")
+			fmt.Println("Annotated Outputs:")
 			var validOutputs []AnnotatedOutput
 			for _, output := range annotatedOutputs {
-				hasMatchingDataResource, _ := findMatchingDataResource(output.Reference, schema)
+				parts := strings.Split(output.Reference, ".")
+				resourceReference := strings.Join(parts[:2], ".")
+				hasMatchingDataResource, _ := findMatchingDataResource(resourceReference, schema)
 				if hasMatchingDataResource {
 					validOutputs = append(validOutputs, output)
 				} else {
@@ -414,9 +437,10 @@ func main() {
 				}
 			}
 			if len(validOutputs) > 0 {
-				interfaceDir := createInterfaceDirectory(fullPath)
-				createTerraformFile(interfaceDir, validOutputs, state, schema)
+				interfaceDir := createInterfaceDirectory(fullPath, false)
+				createTerraformFile(interfaceDir, validOutputs, state, schema, verbose)
 				createProviderFile(interfaceDir, validOutputs, schema)
+				createOutputsFile(interfaceDir, validOutputs, verbose)
 			}
 		}
 		if err := os.Chdir(currentDir); err != nil {

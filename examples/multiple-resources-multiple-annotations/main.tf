@@ -55,11 +55,13 @@ output "random_string_value2" {
 # Output the path to the local file
 # @public
 output "local_file_path" {
-  value = local_file.my_local_file.filename
+  description = "test output with description"
+  value       = local_file.my_local_file.filename
 }
 
 # @public
 output "local_file_contents" {
+  description = ""
   value = local_file.my_local_file.content
 }
 
