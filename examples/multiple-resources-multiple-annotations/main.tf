@@ -5,7 +5,7 @@ provider "random" {}
 provider "local" {}
 
 # Create a random pet name
-#  @interface
+#
 #  even more words
 resource "random_pet" "my_random_pet" {
   length    = 2
@@ -20,7 +20,7 @@ resource "random_string" "my_random_string" {
 
 
 #  Create a local file with the random string
-#  @interface
+#
 #  more words
 resource "local_file" "my_local_file" {
   content  = random_string.my_random_string.result
@@ -33,11 +33,39 @@ output "random_pet_name" {
 }
 
 # Output the random string
+# @public
 output "random_string_value" {
   value = random_string.my_random_string.result
 }
 
+# Output the random string
+# @public
+# words
+output "random_string_value1" {
+  value = random_string.my_random_string.result
+}
+
+# Output the random string
+# @public
+# more words
+output "random_string_value2" {
+  value = random_string.my_random_string.result
+}
+
 # Output the path to the local file
+# @public
 output "local_file_path" {
   value = local_file.my_local_file.filename
+}
+
+# @public
+output "local_file_contents" {
+  value = local_file.my_local_file.content
+}
+
+# words
+# @public
+# More words
+output "local_file_contents_base64" {
+  value = local_file.my_local_file.content_base64
 }

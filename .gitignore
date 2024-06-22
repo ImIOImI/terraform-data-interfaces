@@ -24,6 +24,8 @@ go.work.sum
 # Terraform specific files
 **/.terraform
 *.tfstate
+*.tfstate.backup
+*/generated_*.tf
 
 # Project specific files
 config.yaml
