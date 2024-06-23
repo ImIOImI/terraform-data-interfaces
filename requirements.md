@@ -1,5 +1,3 @@
-Certainly! Here is the list of requirements written in Markdown:
-
 ## Requirements for Terraform Project Automation Script
 
 1. **Configuration:**
