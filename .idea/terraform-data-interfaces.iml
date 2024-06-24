@@ -4,9 +4,9 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/examples/.terraform" />
-      <excludeFolder url="file://$MODULE_DIR$/examples/multiple-resources-multiple-annotations/.terraform" />
       <excludeFolder url="file://$MODULE_DIR$/examples/multiple-resources-no-annotations/.terraform" />
       <excludeFolder url="file://$MODULE_DIR$/examples/multiple-resources-one-annotation/.terraform" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/simple/.terraform" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

@@ -16,11 +16,17 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+type Project struct {
+	Path                string `yaml:"path"`
+	GeneratedFolderName string `yaml:"generatedFolderName"`
+	GeneratedFolderPath string `yaml:"generatedFolderPath"`
+}
+
 type Config struct {
-	Shell                 string   `yaml:"shell"`
-	TerraformProjectPaths []string `yaml:"terraform_project_paths"`
-	UseTofu               bool     `yaml:"use_tofu"`
-	Verbose               bool     `yaml:"verbose"`
+	Shell    string    `yaml:"shell"`
+	Projects []Project `yaml:"projects"`
+	Command  string    `yaml:"command"`
+	Verbose  bool      `yaml:"verbose"`
 }
 
 type TerraformState struct {
@@ -225,14 +231,19 @@ func getResourceState(reference string, state TerraformState) (map[string]interf
 	return nil, false
 }
 
-func createInterfaceDirectory(path string, verbose bool) string {
-	interfaceDir := filepath.Join(path, "interface")
+func createInterfaceDirectory(basePath string, projectPath string, folderName string, folderPath string, verbose bool) string {
+	if folderPath == "" {
+		folderPath = projectPath
+	}
+	interfaceDir := filepath.Join(basePath, folderPath, folderName)
 	if _, err := os.Stat(interfaceDir); os.IsNotExist(err) {
-		err := os.Mkdir(interfaceDir, 0755)
+		err := os.MkdirAll(interfaceDir, 0755)
 		if err != nil {
 			log.Fatalf("Failed to create directory %s: %v", interfaceDir, err)
 		}
-		log.Printf("Created directory: %s", interfaceDir)
+		if verbose {
+			log.Printf("Created directory: %s", interfaceDir)
+		}
 	} else if verbose {
 		log.Printf("Directory already exists: %s", interfaceDir)
 	}
@@ -352,7 +363,7 @@ func createOutputsFile(interfaceDir string, outputs []AnnotatedOutput, verbose b
 func main() {
 	shellFlag := flag.String("shell", "", "Shell to use for executing commands")
 	projectPathFlag := flag.String("project-path", "", "Path to the Terraform project")
-	useTofuFlag := flag.Bool("use-tofu", false, "Use tofu instead of terraform for commands")
+	commandFlag := flag.String("command", "terraform", "Command to use to call terraform/tofu")
 	verboseFlag := flag.Bool("verbose", false, "Enable verbose output")
 	flag.Parse()
 	config := Config{}
@@ -382,17 +393,23 @@ func main() {
 	if *verboseFlag {
 		log.Printf("Using shell path: %s", shellPath)
 	}
-	terraformProjectPaths := []string{"."}
+	projects := []Project{{Path: "."}}
 	if *projectPathFlag != "" {
-		terraformProjectPaths = []string{*projectPathFlag}
-	} else if len(config.TerraformProjectPaths) > 0 {
-		terraformProjectPaths = config.TerraformProjectPaths
+		projects = []Project{{Path: *projectPathFlag}}
+	} else if len(config.Projects) > 0 {
+		projects = config.Projects
 	}
-	useTofu := *useTofuFlag || config.UseTofu
+	command := *commandFlag
+	if config.Command != "" {
+		command = config.Command
+	}
 	verbose := *verboseFlag || config.Verbose
 	fmt.Printf("Using shell: %s\n", shell)
-	fmt.Printf("Terraform project paths:\n  %s\n", strings.Join(terraformProjectPaths, "\n  "))
-	fmt.Printf("Using tofu: %v\n", useTofu)
+	fmt.Printf("Projects:\n")
+	for _, project := range projects {
+		fmt.Printf("  %s\n", project.Path)
+	}
+	fmt.Printf("Using command: %s\n", command)
 	fmt.Printf("Verbose output: %v\n", verbose)
 	currentDir, err := os.Getwd()
 	if err != nil {
@@ -402,15 +419,11 @@ func main() {
 	if verbose {
 		log.Printf("Environment PATH: %s", envPath)
 	}
-	for _, terraformProjectPath := range terraformProjectPaths {
-		fullPath := filepath.Join(currentDir, terraformProjectPath)
+	for _, project := range projects {
+		fullPath := filepath.Join(currentDir, project.Path)
 		fmt.Printf("\033[1;33mChanging directory to Terraform project: %s\033[0m\n", fullPath)
 		if err := os.Chdir(fullPath); err != nil {
 			log.Fatalf("Failed to change directory to Terraform project: %v", err)
-		}
-		command := "terraform"
-		if useTofu {
-			command = "tofu"
 		}
 		state, err := fetchTerraformState(shell, command, fullPath, verbose)
 		if err != nil {
@@ -437,7 +450,11 @@ func main() {
 				}
 			}
 			if len(validOutputs) > 0 {
-				interfaceDir := createInterfaceDirectory(fullPath, false)
+				folderName := project.GeneratedFolderName
+				if folderName == "" {
+					folderName = "interface"
+				}
+				interfaceDir := createInterfaceDirectory(currentDir, project.Path, folderName, project.GeneratedFolderPath, verbose)
 				createTerraformFile(interfaceDir, validOutputs, state, schema, verbose)
 				createProviderFile(interfaceDir, validOutputs, schema)
 				createOutputsFile(interfaceDir, validOutputs, verbose)
